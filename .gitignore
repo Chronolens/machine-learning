@@ -1,3 +1,5 @@
 identified_faces/*
 .env
 __pycache__/*
+temp_downloaded_images/*
+test_downloaded_images/*
