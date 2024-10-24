@@ -35,6 +35,7 @@ class FaceRecognition:
             return []
         
         embeddings = [(file_path, idx, face.normed_embedding) for idx, face in enumerate(faces)]
+        print(f"Found {len(embeddings)} faces in - {file_path}")
         return embeddings
 
     def compare_faces(self, embedding1, embedding2, threshold=0.5):
