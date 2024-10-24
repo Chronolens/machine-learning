@@ -1,13 +1,11 @@
 import os
 import asyncio
 import logging
-import tempfile
-import shutil
 
 from face_recognition import FaceRecognition  # Importing the class for face recognition
-from nats.aio.client import Client as NATS
 from nats.aio.msg import Msg
-from nats.js.client import JetStreamContext
+import nats
+
 from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
@@ -26,8 +24,8 @@ os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
 class EnvVars:
     def __init__(self):
-        self.nats_endpoint = os.getenv("NATS_ENDPOINT", "http://localhost")
-        self.object_storage_endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT", "http://localhost")
+        self.nats_endpoint = "10.0.0.50:4222"
+        self.object_storage_endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT")
         self.object_storage_bucket = os.getenv("OBJECT_STORAGE_BUCKET")
         self.object_storage_region = os.getenv("OBJECT_STORAGE_REGION")
         self.object_storage_access_key = os.getenv("OBJECT_STORAGE_ACCESS_KEY")
@@ -58,50 +56,34 @@ class ImageProcessor:
                 continue
 
         if image_paths:
-
             face_data = self.face_recognition.process_images_in_directory(DOWNLOAD_IMAGES_PATH)
-
             logging.info(f"Processed face data for {len(image_paths)} images.")
-
-            # Clean up temporary images after processing
             self.cleanup_temp_images(image_paths)
-
-            # Compare face embeddings
             self.face_recognition.compare_faces(face_data)
         else:
             logging.warning("No images found to process.")
 
-async def fetch_image_from_s3(self, uuid, bucket):
-    try:
+    async def fetch_image_from_s3(self, uuid, bucket):
+        try:
+            s3_object = bucket.Object(uuid)
+            content_type = s3_object.content_type
+            extension = self.get_extension_from_content_type(content_type)
+            local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{uuid}{extension}")
+            bucket.download_file(uuid, local_image_path)
+            logging.info(f"Image {uuid} downloaded to {local_image_path}")
+            return local_image_path
+        except ClientError as e:
+            logging.error(f"Error fetching image {uuid} from S3: {e}")
+            return None
 
-        s3_object = bucket.Object(uuid) 
-
-        # Fetch the object metadata to get the content type
-        content_type = s3_object.content_type
-        extension = self.get_extension_from_content_type(content_type)
-        
-        # Generate a local file path with the correct extension
-        local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{uuid}{extension}")
-
-        # Download the image
-        bucket.download_file(uuid, local_image_path)
-        logging.info(f"Image {uuid} downloaded to {local_image_path}")
-        return local_image_path
-
-    except ClientError as e:
-        logging.error(f"Error fetching image {uuid} from S3: {e}")
-        return None
-
-def get_extension_from_content_type(self, content_type):
-    """Convert content type to file extension."""
-    if content_type == 'image/jpeg':
-        return '.jpg'
-    elif content_type == 'image/png':
-        return '.png'
-    else:
-        logging.warning(f"Unknown content type: {content_type}. Defaulting to .jpg")
-        return '.jpg'  # TODO: janky solution, improve this
-
+    def get_extension_from_content_type(self, content_type):
+        if content_type == 'image/jpeg':
+            return '.jpg'
+        elif content_type == 'image/png':
+            return '.png'
+        else:
+            logging.warning(f"Unknown content type: {content_type}. Defaulting to .jpg")
+            return '.jpg'
 
 async def setup_bucket(envs: EnvVars):
     try:
@@ -114,11 +96,10 @@ async def setup_bucket(envs: EnvVars):
         )
 
         bucket = s3.Bucket(envs.object_storage_bucket)
-
-        # Check if the bucket exists, and create if not
+        print(f"Checking if bucket {envs.object_storage_bucket} exists...")
         if not bucket.creation_date:
             s3.create_bucket(Bucket=envs.object_storage_bucket)
-            logging.info(f"Bucket {envs.object_storage_bucket} created successfully.")
+            print(f"Bucket {envs.object_storage_bucket} created successfully.")
         return bucket
     except ClientError as e:
         logging.error(f"Error setting up S3 bucket: {e}")
@@ -128,51 +109,42 @@ async def main():
     # Load env vars
     envs = EnvVars()
 
+    # Create an instance of ImageProcessor
+    image_processor = ImageProcessor()
+
     # Setup S3 bucket
     bucket = await setup_bucket(envs)
 
-    # Setup NATS client
-    nats_client = NATS()
+    print("Bucket setup complete.")
 
-    try:
-        await nats_client.connect(servers=[envs.nats_endpoint])
-    except Exception as e:
-        logging.error(f"Couldn't connect to NATS: {e}")
-        return
+    nc = await nats.connect(envs.nats_endpoint)
+    js = nc.jetstream()
 
-    js = nats_client.jetstream()
+    # Create a stream configuration
 
-    stream_name = "machine-learning"
+    # Create or add jetstream stream with the configuration
+    await js.add_stream(name="chronolens", subjects=["machine-learning"])
 
-    # Create or get JetStream stream
-    stream = await js.add_stream(name=stream_name, subjects=[stream_name])
+    print(f"Stream 'chronolens' with subject 'machine-learning' created.")
 
-    # Create or get the consumer for the stream
-    consumer = await js.pull_subscribe(stream_name, durable="machine-learning-consumer")
-
-    # Create an instance of ImageProcessor
-    image_processor = ImageProcessor()
+    sub = await js.subscribe("machine-learning")
 
     # List to store messages in batch
     message_batch = []
 
     async def process_messages():
-        nonlocal message_batch
-
         while True:
-            try:
-                msgs = await consumer.fetch()
+            msg = await sub.next_msg()
+            message_batch.append(msg)
+            print(f"Received message: {msg.data.decode()}")
 
-                message_batch.extend(msgs)
+            if len(message_batch) == BATCH_SIZE:
+                await image_processor.handle_request(message_batch, bucket)
+                message_batch.clear()
 
-                if len(message_batch) >= BATCH_SIZE:
-                    await image_processor.handle_request(message_batch[:BATCH_SIZE], bucket)
-                    message_batch = message_batch[BATCH_SIZE:]
-
-            except Exception as e:
-                logging.error(f"Error fetching messages: {e}")
 
     await process_messages()
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
