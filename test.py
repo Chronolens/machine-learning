@@ -14,7 +14,7 @@ from botocore.exceptions import ClientError
 load_dotenv()
 
 # Define batch size as a global variable
-BATCH_SIZE = 1
+BATCH_SIZE = 4
 
 # create the directory in the same directory as the source file
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
@@ -58,8 +58,8 @@ class ImageProcessor:
         if image_paths:
             face_data = self.face_recognition.process_images_in_directory(DOWNLOAD_IMAGES_PATH)
             logging.info(f"Processed face data for {len(image_paths)} images.")
-            self.cleanup_temp_images(image_paths)
-            self.face_recognition.compare_faces(face_data)
+            # self.cleanup_temp_images(image_paths)
+            # self.face_recognition.compare_faces(face_data)
         else:
             logging.warning("No images found to process.")
 
@@ -84,6 +84,15 @@ class ImageProcessor:
         else:
             logging.warning(f"Unknown content type: {content_type}. Defaulting to .jpg")
             return '.jpg'
+
+    def cleanup_temp_images(self, image_paths):
+        for image_path in image_paths:
+            try:
+                os.remove(image_path)
+                logging.info(f"Deleted temporary image: {image_path}")
+            except OSError as e:
+                logging.error(f"Error deleting temporary image {image_path}: {e}")
+
 
 async def setup_bucket(envs: EnvVars):
     try:
@@ -134,7 +143,7 @@ async def main():
 
     async def process_messages():
         while True:
-            msg = await sub.next_msg()
+            msg = await sub.next_msg(timeout=50)
             message_batch.append(msg)
             print(f"Received message: {msg.data.decode()}")
 
