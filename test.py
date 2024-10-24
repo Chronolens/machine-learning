@@ -14,7 +14,7 @@ from botocore.exceptions import ClientError
 load_dotenv()
 
 # Define batch size as a global variable
-BATCH_SIZE = 4
+BATCH_SIZE = 1
 
 # create the directory in the same directory as the source file
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
@@ -150,7 +150,7 @@ async def main():
             if len(message_batch) == BATCH_SIZE:
                 await image_processor.handle_request(message_batch, bucket)
                 message_batch.clear()
-
+            msg.ack()
 
     await process_messages()
 
@@ -159,6 +159,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
 
+#TODO: FIX ACK NOT REMOVING MESSAGES FROM QUEUE 
 
 #TODO: STORE EMBEDDINGS IN DATABASE
 #TODO: FIX NEXT MSG TIMEOUT DISCONNECT ISSUE
