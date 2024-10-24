@@ -158,3 +158,8 @@ async def main():
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
+
+
+#TODO: STORE EMBEDDINGS IN DATABASE
+#TODO: FIX NEXT MSG TIMEOUT DISCONNECT ISSUE
+#TODO: GIVEN AN IMAGE ID, COMPARE IT WITH ALL THE IMAGES WITH EMDEDINGS IN THE DATABASE
