@@ -3,16 +3,13 @@ import logging
 import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
-from face_recognition import FaceRecognition  # Importing the class for face recognition
+from face_recognition import FaceRecognition 
 
-# Load environment variables from .env file
-load_dotenv()
 
-# Define global variables
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_downloaded_images')
 
-# Create the directory to download images
 os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
+
 
 class EnvVars:
     def __init__(self):
@@ -25,14 +22,14 @@ class EnvVars:
 
 class ImageDownloaderAndProcessor:
     def __init__(self):
-        self.face_recognition = FaceRecognition()  # Assuming FaceRecognition has methods to process images
+        self.face_recognition = FaceRecognition()  
         os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
     def fetch_images_from_s3(self, bucket):
         logging.info(f"Fetching images from bucket: {bucket.name}")
         try:
             image_paths = []
-            for obj in bucket.objects.all():
+            for obj in bucket.objects.filter(Prefix=""): #trying to filter only the full images
                 uuid = obj.key
                 logging.info(f"Found image with UUID: {uuid}")
                 image_path = self.download_image_from_s3(uuid, bucket)
@@ -45,43 +42,74 @@ class ImageDownloaderAndProcessor:
             logging.error(f"Error fetching images from S3: {e}")
             return []
 
-
     def download_image_from_s3(self, uuid, bucket):
         try:
-            # Clean the UUID to remove any unwanted characters
-            clean_uuid = uuid.replace("/", "_")  # Replace any forward slashes with underscores
+
+            clean_uuid = uuid.replace("/", "_")  
             s3_object = bucket.Object(uuid)
             content_type = s3_object.content_type
             extension = self.get_extension_from_content_type(content_type)
             
-            # Create a valid file path and ensure directories exist
+
             local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{clean_uuid}{extension}")
-            os.makedirs(os.path.dirname(local_image_path), exist_ok=True)  # Ensure directory exists
+            os.makedirs(os.path.dirname(local_image_path), exist_ok=True) 
             
             # Download the file
             bucket.download_file(uuid, local_image_path)
-            logging.info(f"Image {uuid} downloaded to {local_image_path}")
             return local_image_path
         except ClientError as e:
             logging.error(f"Error downloading image {uuid} from S3: {e}")
             return None
 
     def get_extension_from_content_type(self, content_type):
+
         if content_type == 'image/jpeg':
             return '.jpg'
         elif content_type == 'image/png':
             return '.png'
+        elif content_type in ['image/heif', 'image/heic']:
+            return '.heif'
+        elif content_type == 'image/bmp':
+            return '.bmp'
+        elif content_type == 'image/tiff':
+            return '.tiff'
+        elif content_type == 'image/gif':
+            return '.gif'
+        elif content_type == 'image/webp':
+            return '.webp'
+        
+
+        elif content_type == 'video/mp4':
+            return '.mp4'
+        elif content_type == 'video/x-msvideo':
+            return '.avi'
+        elif content_type == 'video/x-matroska': 
+            return '.mkv'
+        elif content_type == 'video/webm':
+            return '.webm'
+        elif content_type == 'video/quicktime':
+            return '.mov'
+        
+
         else:
             logging.warning(f"Unknown content type: {content_type}. Defaulting to .jpg")
             return '.jpg'
 
 
     def process_downloaded_images(self, image_paths):
-        if image_paths:
-            face_data = self.face_recognition.process_images_in_directory(DOWNLOAD_IMAGES_PATH)
+        face_data = []
+
+        for image_path in image_paths:
+            embeddings = self.face_recognition.extract_face_embeddings(image_path)
+            if embeddings:
+                face_data.extend(embeddings)
+
+        if face_data:
             logging.info(f"Processed face data for {len(image_paths)} images.")
+            self.face_recognition.save_to_csv(face_data) 
+            self.face_recognition.compare_all_faces(face_data) # Hardcoded comparing between vectors for now, TODO: Implement clustering
         else:
-            logging.warning("No images found to process.")
+            logging.warning("No faces found in downloaded images.")
 
     def cleanup_temp_images(self, image_paths):
         for image_path in image_paths:
@@ -115,21 +143,18 @@ def setup_bucket(envs: EnvVars):
 def main():
     logging.basicConfig(level=logging.INFO)
 
-    # Load environment variables
+    load_dotenv()
     envs = EnvVars()
-
-    # Set up the S3 bucket
     bucket = setup_bucket(envs)
 
-    # Initialize the image downloader and processor
     image_downloader_processor = ImageDownloaderAndProcessor()
 
-    # Fetch and download all images from the bucket
     image_paths = image_downloader_processor.fetch_images_from_s3(bucket)
 
-    # Process the downloaded images
     image_downloader_processor.process_downloaded_images(image_paths)
 
+    # Cleanup the images
+    # image_downloader_processor.cleanup_temp_images(image_paths)
 
 
 if __name__ == '__main__':
