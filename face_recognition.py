@@ -27,9 +27,11 @@ class FaceRecognition:
 
             x1, y1, x2, y2 = face.bbox.astype(int)
 
+            
+            # Coordinate system is left to right positive x and top to bottom positive y
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
-            
+
             print(f"Bounding Box for Face {face_id + 1} in {os.path.basename(file_path)}: "
                 f"({x1}, {y1}) to ({x2}, {y2})")
             print(f"Calculated Center: ({center_x}, {center_y})")
