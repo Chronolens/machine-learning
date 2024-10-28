@@ -1,5 +1,6 @@
 import cv2
 import os
+import csv
 from insightface.app import FaceAnalysis
 from scipy.spatial.distance import cosine
 
@@ -23,9 +24,17 @@ class FaceRecognition:
             print(f"No faces found in - {file_path}")
             return []
         
-        embeddings = [(file_path, idx, face.normed_embedding) for idx, face in enumerate(faces)]
-        print(f"Found {len(embeddings)} faces in - {file_path}")
-        return embeddings
+        embeddings_data = []
+        
+        for idx, face in enumerate(faces):
+
+            x1, y1, x2, y2 = face.bbox.astype(int)
+            center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+
+            embeddings_data.append((file_path, idx, face.normed_embedding, (center_x, center_y)))
+        
+        print(f"Found {len(embeddings_data)} faces in - {file_path}")
+        return embeddings_data
 
 
     def compare_faces(self, embedding1, embedding2, threshold=0.5):
@@ -45,10 +54,27 @@ class FaceRecognition:
         
         return face_data
 
+
+    # Temp to save face data to a csv file instead of database for testing purposes
+    def save_to_csv(self, face_data, csv_file='face_data.csv'):
+        
+        with open(csv_file, mode='w', newline='') as file:
+            writer = csv.writer(file, delimiter=';')
+            writer.writerow(["media_Id", "embedding", "coordinates"]) 
+            
+            for file_path, face_idx, embedding, (center_x, center_y) in face_data:
+
+                embedding_list = embedding.tolist()
+                coordinates = f"({center_x}, {center_y})"
+                writer.writerow([file_path, embedding_list, coordinates])
+
+        print(f"Data saved to {csv_file}")
+
+
     def compare_all_faces(self, face_data):
 
-        for i, (file1, face_idx1, embedding1) in enumerate(face_data):
-            for j, (file2, face_idx2, embedding2) in enumerate(face_data):
+        for i, (file1, face_idx1, embedding1, _) in enumerate(face_data):
+            for j, (file2, face_idx2, embedding2, _) in enumerate(face_data):
                 if i != j:
                     if self.compare_faces(embedding1, embedding2):
                         print(f"Face {face_idx1 + 1} in {file1} matches Face {face_idx2 + 1} in {file2}")
