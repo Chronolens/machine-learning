@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 
-from face_recognition import FaceRecognition  # Importing the class for face recognition
+from face_recognition import FaceRecognition 
 from nats.aio.msg import Msg
 import nats
 
@@ -10,16 +10,9 @@ from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import ClientError
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Define batch size as a global variable
 BATCH_SIZE = 1
 
-# create the directory in the same directory as the source file
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
-
-# Create the downloaded images directory if it doesn't exist
 os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
 class EnvVars:
@@ -58,8 +51,18 @@ class ImageProcessor:
         if image_paths:
             face_data = self.face_recognition.process_images_in_directory(DOWNLOAD_IMAGES_PATH)
             logging.info(f"Processed face data for {len(image_paths)} images.")
+            
+            for file_path, face_idx, embedding, (center_x, center_y) in face_data:
+                file_name = os.path.basename(file_path)  
+                embedding_shape = embedding.shape
+                logging.info(f"File: {file_name}, Face Index: {face_idx}, Embedding Shape: {embedding_shape}, Coordinates: ({center_x}, {center_y})")
+            
+            # testing only
+            csv_file_path = os.path.join(DOWNLOAD_IMAGES_PATH, 'face_data.csv')
+            self.face_recognition.save_to_csv(face_data, csv_file=csv_file_path)
+            logging.info(f"Face data saved to {csv_file_path}")
+            
             # self.cleanup_temp_images(image_paths)
-            # self.face_recognition.compare_faces(face_data)
         else:
             logging.warning("No images found to process.")
 
@@ -115,13 +118,13 @@ async def setup_bucket(envs: EnvVars):
         raise
 
 async def main():
-    # Load env vars
+
+    load_dotenv()
+
     envs = EnvVars()
 
-    # Create an instance of ImageProcessor
     image_processor = ImageProcessor()
 
-    # Setup S3 bucket
     bucket = await setup_bucket(envs)
 
     print("Bucket setup complete.")
@@ -129,16 +132,12 @@ async def main():
     nc = await nats.connect(envs.nats_endpoint)
     js = nc.jetstream()
 
-    # Create a stream configuration
-
-    # Create or add jetstream stream with the configuration
     await js.add_stream(name="chronolens", subjects=["machine-learning"])
 
     print(f"Stream 'chronolens' with subject 'machine-learning' created.")
 
     sub = await js.subscribe("machine-learning")
 
-    # List to store messages in batch
     message_batch = []
 
     async def process_messages():
@@ -159,8 +158,9 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
 
-#TODO: FIX ACK NOT REMOVING MESSAGES FROM QUEUE 
 
+
+#TODO: FIX ACK NOT REMOVING MESSAGES FROM QUEUE 
 #TODO: STORE EMBEDDINGS IN DATABASE
 #TODO: FIX NEXT MSG TIMEOUT DISCONNECT ISSUE
 #TODO: GIVEN AN IMAGE ID, COMPARE IT WITH ALL THE IMAGES WITH EMDEDINGS IN THE DATABASE
