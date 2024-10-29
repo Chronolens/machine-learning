@@ -1,17 +1,17 @@
 import os
 import asyncio
 import logging
-
+import boto3
+import psycopg
+from botocore.exceptions import ClientError
+from dotenv import load_dotenv
 from face_recognition import FaceRecognition 
 from nats.aio.msg import Msg
 import nats
+from psycopg import sql
+from pgvecto_rs.psycopg import register_vector
 
-from dotenv import load_dotenv
-import boto3
-from botocore.exceptions import ClientError
-
-BATCH_SIZE = 1
-
+BATCH_SIZE = 5
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
 os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
@@ -24,10 +24,32 @@ class EnvVars:
         self.object_storage_access_key = os.getenv("OBJECT_STORAGE_ACCESS_KEY")
         self.object_storage_secret_key = os.getenv("OBJECT_STORAGE_SECRET_KEY")
 
+        self.database_host = os.getenv("DATABASE_HOST")
+        self.database_user = os.getenv("DATABASE_USERNAME")
+        self.database_password = os.getenv("DATABASE_PASSWORD")
+        self.database_port = os.getenv("DATABASE_PORT")
+        self.database_name = os.getenv("DATABASE_NAME")
+
 class ImageProcessor:
-    def __init__(self):
-        self.face_recognition = FaceRecognition() 
+    def __init__(self, envs: EnvVars):
+        self.envs = envs
+        self.face_recognition = FaceRecognition()
+        self.connection = self.connect_to_database()
         os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
+
+    def connect_to_database(self):
+        url = f"postgresql://{self.envs.database_user}:{self.envs.database_password}@" \
+              f"{self.envs.database_host}:{self.envs.database_port}/{self.envs.database_name}"
+        try:
+            conn = psycopg.connect(url)
+            with conn.cursor() as cur:
+                cur.execute('CREATE EXTENSION IF NOT EXISTS vectors')
+            register_vector(conn)
+            logging.info("Connected to the database successfully and registered vector types.")
+            return conn
+        except Exception as e:
+            logging.error(f"Error connecting to the database: {e}")
+            raise
 
     async def handle_request(self, messages: list[Msg], bucket):
         logging.info(f"Processing batch of {len(messages)} messages")
@@ -37,13 +59,10 @@ class ImageProcessor:
             try:
                 uuid = msg.data.decode()
                 logging.info(f"Processing image with UUID: {uuid}")
-
                 image_path = await self.fetch_image_from_s3(uuid, bucket)
                 if image_path:
                     image_paths.append(image_path)
-
                 await msg.ack()
-
             except Exception as e:
                 logging.error(f"Error processing message {msg.data.decode()}: {e}")
                 continue
@@ -51,20 +70,35 @@ class ImageProcessor:
         if image_paths:
             face_data = self.face_recognition.process_images_in_directory(DOWNLOAD_IMAGES_PATH)
             logging.info(f"Processed face data for {len(image_paths)} images.")
-            
-            for file_path, face_idx, embedding, (center_x, center_y) in face_data:
-                file_name = os.path.basename(file_path)  
-                embedding_shape = embedding.shape
-                logging.info(f"File: {file_name}, Face Index: {face_idx}, Embedding Shape: {embedding_shape}, Coordinates: ({center_x}, {center_y})")
-            
-            # testing only
-            csv_file_path = os.path.join(DOWNLOAD_IMAGES_PATH, 'face_data.csv')
-            self.face_recognition.save_to_csv(face_data, csv_file=csv_file_path)
-            logging.info(f"Face data saved to {csv_file_path}")
-            
+            self.insert_face_data_to_db(face_data)
             # self.cleanup_temp_images(image_paths)
         else:
             logging.warning("No images found to process.")
+
+    def insert_face_data_to_db(self, face_data):
+        with self.connection.cursor() as cursor:
+            for file_path, embedding, coordinates, face_id in face_data:
+
+                embedding_str = f"[{', '.join(map(str, embedding))}]"
+                coordinates_str = f"[{', '.join(map(str, coordinates))}]"
+                media_id = os.path.basename(file_path).split('.')[0]
+
+                insert_query = """
+                INSERT INTO face_data (media_id, embedding, coordinates)
+                VALUES (%s, %s::vector, %s::vector)
+                RETURNING id;
+                """
+                params = (media_id, embedding_str, coordinates_str)
+
+                try:
+                    cursor.execute(sql.SQL(insert_query), params)
+                    inserted_id = cursor.fetchone()[0]
+                    logging.info(f"Inserted face data for media_id {media_id} with id {inserted_id}.")
+                except Exception as e:
+                    self.connection.rollback()
+                    logging.error(f"Error inserting face data for media_id {media_id}: {e}")
+                    continue
+                self.connection.commit()
 
     async def fetch_image_from_s3(self, uuid, bucket):
         try:
@@ -80,13 +114,11 @@ class ImageProcessor:
             return None
 
     def get_extension_from_content_type(self, content_type):
-        if content_type == 'image/jpeg':
-            return '.jpg'
-        elif content_type == 'image/png':
-            return '.png'
-        else:
-            logging.warning(f"Unknown content type: {content_type}. Defaulting to .jpg")
-            return '.jpg'
+        extensions = {
+            'image/jpeg': '.jpg',
+            'image/png': '.png'
+        }
+        return extensions.get(content_type, '.jpg')
 
     def cleanup_temp_images(self, image_paths):
         for image_path in image_paths:
@@ -95,7 +127,6 @@ class ImageProcessor:
                 logging.info(f"Deleted temporary image: {image_path}")
             except OSError as e:
                 logging.error(f"Error deleting temporary image {image_path}: {e}")
-
 
 async def setup_bucket(envs: EnvVars):
     try:
@@ -106,36 +137,25 @@ async def setup_bucket(envs: EnvVars):
             aws_access_key_id=envs.object_storage_access_key,
             aws_secret_access_key=envs.object_storage_secret_key
         )
-
         bucket = s3.Bucket(envs.object_storage_bucket)
-        print(f"Checking if bucket {envs.object_storage_bucket} exists...")
         if not bucket.creation_date:
             s3.create_bucket(Bucket=envs.object_storage_bucket)
-            print(f"Bucket {envs.object_storage_bucket} created successfully.")
+            logging.info(f"Bucket {envs.object_storage_bucket} created successfully.")
         return bucket
     except ClientError as e:
         logging.error(f"Error setting up S3 bucket: {e}")
         raise
 
 async def main():
-
     load_dotenv()
-
     envs = EnvVars()
-
-    image_processor = ImageProcessor()
-
+    image_processor = ImageProcessor(envs)
     bucket = await setup_bucket(envs)
-
-    print("Bucket setup complete.")
+    logging.info("Bucket setup complete.")
 
     nc = await nats.connect(envs.nats_endpoint)
     js = nc.jetstream()
-
     await js.add_stream(name="chronolens", subjects=["machine-learning"])
-
-    print(f"Stream 'chronolens' with subject 'machine-learning' created.")
-
     sub = await js.subscribe("machine-learning")
 
     message_batch = []
@@ -144,23 +164,14 @@ async def main():
         while True:
             msg = await sub.next_msg(timeout=50)
             message_batch.append(msg)
-            print(f"Received message: {msg.data.decode()}")
+            logging.info(f"Received message: {msg.data.decode()}")
 
             if len(message_batch) == BATCH_SIZE:
                 await image_processor.handle_request(message_batch, bucket)
                 message_batch.clear()
-            msg.ack()
 
     await process_messages()
-
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
-
-
-
-#TODO: FIX ACK NOT REMOVING MESSAGES FROM QUEUE 
-#TODO: STORE EMBEDDINGS IN DATABASE
-#TODO: FIX NEXT MSG TIMEOUT DISCONNECT ISSUE
-#TODO: GIVEN AN IMAGE ID, COMPARE IT WITH ALL THE IMAGES WITH EMDEDINGS IN THE DATABASE
