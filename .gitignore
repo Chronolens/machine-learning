@@ -3,3 +3,4 @@ identified_faces/*
 __pycache__/*
 temp_downloaded_images/*
 test_downloaded_images/*
+generated/*
