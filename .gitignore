@@ -1,6 +1,6 @@
 identified_faces/*
 .env
 src/__pycache__/*
-temp_downloaded_images/*
-test_downloaded_images/*
+src/temp_downloaded_images/*
+local_testing/test_downloaded_images/*
 generated/*
