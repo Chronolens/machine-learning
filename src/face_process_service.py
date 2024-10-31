@@ -3,21 +3,22 @@ import asyncio
 import logging
 import boto3
 import psycopg
-from botocore.exceptions import ClientError
-from dotenv import load_dotenv
-from src.face_recognition import FaceRecognition 
-from nats.aio.msg import Msg
 import nats
+
 from psycopg import sql
+from dotenv import load_dotenv
+from nats.aio.msg import Msg
+from botocore.exceptions import ClientError
+from face_recognition import FaceRecognition 
 from pgvecto_rs.psycopg import register_vector
 
-BATCH_SIZE = 5
+BATCH_SIZE = 1
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
 os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
 class EnvVars:
     def __init__(self):
-        self.nats_endpoint = "10.0.0.50:4222"
+        self.nats_endpoint = os.getenv("NATS_ENDPOINT")
         self.object_storage_endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT")
         self.object_storage_bucket = os.getenv("OBJECT_STORAGE_BUCKET")
         self.object_storage_region = os.getenv("OBJECT_STORAGE_REGION")
@@ -51,29 +52,19 @@ class ImageProcessor:
             logging.error(f"Error connecting to the database: {e}")
             raise
 
-    async def handle_request(self, messages: list[Msg], bucket):
-        logging.info(f"Processing batch of {len(messages)} messages")
-        image_paths = []
+    async def handle_request(self, message: Msg, bucket):
 
-        for msg in messages:
-            try:
-                uuid = msg.data.decode()
-                logging.info(f"Processing image with UUID: {uuid}")
-                image_path = await self.fetch_image_from_s3(uuid, bucket)
-                if image_path:
-                    image_paths.append(image_path)
-                await msg.ack()
-            except Exception as e:
-                logging.error(f"Error processing message {msg.data.decode()}: {e}")
-                continue
+        uuid = message.data.decode()
+        face_data = []
 
-        if image_paths:
-            face_data = self.face_recognition.process_images_in_directory(DOWNLOAD_IMAGES_PATH)
-            logging.info(f"Processed face data for {len(image_paths)} images.")
-            self.insert_face_data_to_db(face_data)
-            # self.cleanup_temp_images(image_paths)
-        else:
-            logging.warning("No images found to process.")
+
+        image_path = await self.fetch_image_from_s3(uuid, bucket)
+        if image_path:
+            face_data.extend(self.face_recognition.extract_face_embeddings(image_path))
+        
+        self.insert_face_data_to_db(face_data)
+        # self.cleanup_temp_images(image_paths)
+
 
     def insert_face_data_to_db(self, face_data):
         with self.connection.cursor() as cursor:
@@ -158,22 +149,25 @@ async def main():
     
     nc = await nats.connect(envs.nats_endpoint)
     js = nc.jetstream()
-    await js.add_stream(name="chronolens", subjects=["machine-learning"])
+    # Delete the existing stream if it exists
+    await js.delete_stream(name="chronolens")
+
+    # Recreate the stream with the new configuration
+    await js.add_stream(
+        name="chronolens",
+        subjects=["machine-learning"],
+        retention="workqueue"
+    )
+
     sub = await js.subscribe("machine-learning")
 
-    message_batch = []
+    while True:
+        msg = await sub.next_msg(timeout=50)
+        await msg.ack()
+        logging.info(f"Received message: {msg.data.decode()}")
+        await image_processor.handle_request(msg, bucket)
 
-    async def process_messages():
-        while True:
-            msg = await sub.next_msg(timeout=50)
-            message_batch.append(msg)
-            logging.info(f"Received message: {msg.data.decode()}")
-
-            if len(message_batch) == BATCH_SIZE:
-                await image_processor.handle_request(message_batch, bucket)
-                message_batch.clear()
-
-    await process_messages()
+ 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
