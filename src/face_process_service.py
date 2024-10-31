@@ -149,11 +149,9 @@ async def main():
     
     nc = await nats.connect(envs.nats_endpoint)
     js = nc.jetstream()
-    # Delete the existing stream if it exists
-    await js.delete_stream(name="chronolens")
 
     # Recreate the stream with the new configuration
-    await js.add_stream(
+    await js.update_stream(
         name="chronolens",
         subjects=["machine-learning"],
         retention="workqueue"
