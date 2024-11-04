@@ -5,7 +5,7 @@ import psycopg
 from psycopg import sql
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
-from src.face_recognition import FaceRecognition
+from face_recognition import FaceRecognition
 from pgvecto_rs.psycopg import register_vector
 
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'test_downloaded_images')
@@ -52,6 +52,10 @@ class ImageDownloaderAndProcessor:
             image_paths = []
             for obj in bucket.objects.filter(Prefix=""):
                 uuid = obj.key
+                # Skip images that start with "prev/" path
+                if uuid.startswith("prev/"):
+                    logging.info(f"Skipping image with UUID (starts with 'prev/'): {uuid}")
+                    continue
                 logging.info(f"Found image with UUID: {uuid}")
                 image_path = self.download_image_from_s3(uuid, bucket)
                 if image_path:
@@ -60,6 +64,8 @@ class ImageDownloaderAndProcessor:
         except ClientError as e:
             logging.error(f"Error fetching images from S3: {e}")
             return []
+
+
 
     def download_image_from_s3(self, uuid, bucket):
         try:
