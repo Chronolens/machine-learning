@@ -9,8 +9,11 @@ from psycopg import sql
 from dotenv import load_dotenv
 from nats.aio.msg import Msg
 from botocore.exceptions import ClientError
-from face_recognition import FaceRecognition 
+from face_recognition import FaceRecognition
 from pgvecto_rs.psycopg import register_vector
+
+logger = logging.getLogger("face_process_service")
+logger.setLevel(logging.INFO)
 
 BATCH_SIZE = 1
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
@@ -46,30 +49,26 @@ class ImageProcessor:
             with conn.cursor() as cur:
                 cur.execute('CREATE EXTENSION IF NOT EXISTS vectors')
             register_vector(conn)
-            logging.info("Connected to the database successfully and registered vector types.")
+            logger.info("Connected to the database successfully and registered vector types.")
             return conn
         except Exception as e:
-            logging.error(f"Error connecting to the database: {e}")
+            logger.error(f"Error connecting to the database: {e}")
             raise
 
     async def handle_request(self, message: Msg, bucket):
-
         uuid = message.data.decode()
         face_data = []
-
 
         image_path = await self.fetch_image_from_s3(uuid, bucket)
         if image_path:
             face_data.extend(self.face_recognition.extract_face_embeddings(image_path))
         
         self.insert_face_data_to_db(face_data)
-        # self.cleanup_temp_images(image_paths)
-
+        os.remove(image_path)
 
     def insert_face_data_to_db(self, face_data):
         with self.connection.cursor() as cursor:
             for file_path, embedding, coordinates, face_id in face_data:
-
                 embedding_str = f"[{', '.join(map(str, embedding))}]"
                 coordinates_str = f"[{', '.join(map(str, coordinates))}]"
                 media_id = os.path.basename(file_path).split('.')[0]
@@ -84,10 +83,10 @@ class ImageProcessor:
                 try:
                     cursor.execute(sql.SQL(insert_query), params)
                     inserted_id = cursor.fetchone()[0]
-                    logging.info(f"Inserted face data for media_id {media_id} with id {inserted_id}.")
+                    logger.info(f"Inserted face data for media_id {media_id} with id {inserted_id}.")
                 except Exception as e:
                     self.connection.rollback()
-                    logging.error(f"Error inserting face data for media_id {media_id}: {e}")
+                    logger.error(f"Error inserting face data for media_id {media_id}: {e}")
                     continue
                 self.connection.commit()
 
@@ -98,10 +97,10 @@ class ImageProcessor:
             extension = self.get_extension_from_content_type(content_type)
             local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{uuid}{extension}")
             bucket.download_file(uuid, local_image_path)
-            logging.info(f"Image {uuid} downloaded to {local_image_path}")
+            logger.info(f"Image {uuid} downloaded to {local_image_path}")
             return local_image_path
         except ClientError as e:
-            logging.error(f"Error fetching image {uuid} from S3: {e}")
+            logger.error(f"Error fetching image {uuid} from S3: {e}")
             return None
 
     def get_extension_from_content_type(self, content_type):
@@ -111,13 +110,6 @@ class ImageProcessor:
         }
         return extensions.get(content_type, '.jpg')
 
-    def cleanup_temp_images(self, image_paths):
-        for image_path in image_paths:
-            try:
-                os.remove(image_path)
-                logging.info(f"Deleted temporary image: {image_path}")
-            except OSError as e:
-                logging.error(f"Error deleting temporary image {image_path}: {e}")
 
 async def setup_bucket(envs: EnvVars):
     try:
@@ -131,45 +123,49 @@ async def setup_bucket(envs: EnvVars):
         bucket = s3.Bucket(envs.object_storage_bucket)
         if not bucket.creation_date:
             s3.create_bucket(Bucket=envs.object_storage_bucket)
-            logging.info(f"Bucket {envs.object_storage_bucket} created successfully.")
+            logger.info(f"Bucket {envs.object_storage_bucket} created successfully.")
         return bucket
     except ClientError as e:
-        logging.error(f"Error setting up S3 bucket: {e}")
+        logger.error(f"Error setting up S3 bucket: {e}")
         raise
 
 
-async def main():
+async def message_handler(msg: Msg, image_processor: ImageProcessor, bucket):
 
+    logging.info(f"Received message: {msg.data.decode()}")
+    await image_processor.handle_request(msg, bucket)
+    await msg.ack()
+
+async def main():
     load_dotenv()
     envs = EnvVars()
     bucket = await setup_bucket(envs)
     logging.info("Bucket setup complete.")
 
     image_processor = ImageProcessor(envs)
-    
-    nc = await nats.connect(envs.nats_endpoint)
-    js = nc.jetstream()
 
-    # Recreate the stream with the new configuration
-    await js.update_stream(
-        name="chronolens",
-        subjects=["machine-learning"],
-        retention="workqueue"
-    )
+    try:
+        nc = await nats.connect(envs.nats_endpoint)
+        js = nc.jetstream()
 
-    sub = await js.subscribe("machine-learning")
+        try:
+            stream_info = await js.stream_info("chronolens")
+            logging.info(f"Stream info: {stream_info}")
+        except Exception as e:
+            logging.error("Stream 'chronolens' not found or misconfigured. Attempting to create it.")
+            await js.add_stream(name="chronolens", subjects=["machine-learning"], retention="workqueue")
 
-    while True:
-        msg = await sub.next_msg(timeout=50)
-        await msg.ack()
-        logging.info(f"Received message: {msg.data.decode()}")
-        await image_processor.handle_request(msg, bucket)
+        sub = await js.subscribe("machine-learning", cb=lambda msg: asyncio.create_task(message_handler(msg, image_processor, bucket)))
+        logging.info("Subscribed to 'machine-learning'")
 
- 
+        while True:
+            await asyncio.sleep(5)
+
+    except Exception as conn_error:
+        logging.error(f"Failed to connect to NATS: {conn_error}")
+
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
-
-
-# TODO: MESSAGES ARE NOT BEING CONSUMED FROM THE NATS STREAM
