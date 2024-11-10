@@ -21,6 +21,7 @@ os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
 class EnvVars:
     def __init__(self):
+        # Retrieve environment variables
         self.nats_endpoint = os.getenv("NATS_ENDPOINT")
         self.object_storage_endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT")
         self.object_storage_bucket = os.getenv("OBJECT_STORAGE_BUCKET")
@@ -42,6 +43,7 @@ class ImageProcessor:
         os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
     def connect_to_database(self):
+        
         url = f"postgresql://{self.envs.database_user}:{self.envs.database_password}@" \
               f"{self.envs.database_host}:{self.envs.database_port}/{self.envs.database_name}"
         try:
@@ -68,17 +70,19 @@ class ImageProcessor:
 
     def insert_face_data_to_db(self, face_data):
         with self.connection.cursor() as cursor:
-            for file_path, embedding, coordinates, face_id in face_data:
+            for file_path, embedding, bb_coordinates, _ in face_data:
                 embedding_str = f"[{', '.join(map(str, embedding))}]"
-                coordinates_str = f"[{', '.join(map(str, coordinates))}]"
+
+                bounding_box_str = f"[{', '.join(map(str, bb_coordinates))}]"
+
                 media_id = os.path.basename(file_path).split('.')[0]
 
                 insert_query = """
-                INSERT INTO face_data (media_id, embedding, coordinates)
+                INSERT INTO media_face (media_id, embedding, face_bounding_box)
                 VALUES (%s, %s::vector, %s::vector)
                 RETURNING id;
                 """
-                params = (media_id, embedding_str, coordinates_str)
+                params = (media_id, embedding_str, bounding_box_str)
 
                 try:
                     cursor.execute(sql.SQL(insert_query), params)
