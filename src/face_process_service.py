@@ -21,7 +21,6 @@ os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
 class EnvVars:
     def __init__(self):
-        # Retrieve environment variables
         self.nats_endpoint = os.getenv("NATS_ENDPOINT")
         self.object_storage_endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT")
         self.object_storage_bucket = os.getenv("OBJECT_STORAGE_BUCKET")
@@ -43,7 +42,7 @@ class ImageProcessor:
         os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
     def connect_to_database(self):
-        
+
         url = f"postgresql://{self.envs.database_user}:{self.envs.database_password}@" \
               f"{self.envs.database_host}:{self.envs.database_port}/{self.envs.database_name}"
         try:
@@ -173,6 +172,3 @@ async def main():
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
-
-
-# TODO: Insert bounding box as well as coordinates in the database
