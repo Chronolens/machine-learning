@@ -25,7 +25,6 @@ class FaceRecognition:
         for face_id, face in enumerate(faces):
 
             x1, y1, x2, y2 = face.bbox.astype(int)
-
             
             # Coordinate system is left to right positive x and top to bottom positive y
             center_x = (x1 + x2) // 2
@@ -36,7 +35,7 @@ class FaceRecognition:
             print(f"Calculated Center: ({center_x}, {center_y})")
 
             coordinates = [center_x, center_y]
-            embeddings_data.append((file_path, face.normed_embedding, coordinates, face_id))
+            embeddings_data.append((file_path, face.normed_embedding, [x1,y1,x2,y2], face_id))
 
         return embeddings_data
 
