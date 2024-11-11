@@ -218,3 +218,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+# TODO RUN CLUSTER FOR EACH USER ID IN DATABASE
+
+
+# SELECT JOIN MEDIA_FACE WITH MEDIA ON MEDIA_ID
+# 
+# e para cada id de user fazer clustering 
