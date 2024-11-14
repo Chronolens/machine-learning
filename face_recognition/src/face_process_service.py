@@ -48,7 +48,7 @@ class ImageProcessor:
         try:
             conn = psycopg.connect(url)
             with conn.cursor() as cur:
-                cur.execute('CREATE EXTENSION IF NOT EXISTS vectors')
+                cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
             register_vector(conn)
             logger.info("Connected to the database successfully and registered vector types.")
             return conn
@@ -72,13 +72,14 @@ class ImageProcessor:
             for file_path, embedding, bb_coordinates, _ in face_data:
                 embedding_str = f"[{', '.join(map(str, embedding))}]"
 
-                bounding_box_str = f"[{', '.join(map(str, bb_coordinates))}]"
+                bounding_box_str = f"{{ {', '.join(map(str, bb_coordinates))} }}"
+
 
                 media_id = os.path.basename(file_path).split('.')[0]
 
                 insert_query = """
                 INSERT INTO media_face (media_id, embedding, face_bounding_box)
-                VALUES (%s, %s::vector, %s::vector)
+                VALUES (%s, %s::vector, %s)
                 RETURNING id;
                 """
                 params = (media_id, embedding_str, bounding_box_str)
