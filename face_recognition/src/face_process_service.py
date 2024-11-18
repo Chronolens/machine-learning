@@ -12,8 +12,17 @@ from botocore.exceptions import ClientError
 from face_recognition import FaceRecognition
 from pgvecto_rs.psycopg import register_vector
 
+import warnings # This warning comes from the insightface library TODO: I should fix it in the future
+warnings.filterwarnings("ignore", message="`rcond` parameter will change to the default of machine precision times")
+
+
+# This is duplicated to the face_recognition, TODO: Refactor this
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 logger = logging.getLogger("face_process_service")
-logger.setLevel(logging.INFO)
 
 BATCH_SIZE = 1
 DOWNLOAD_IMAGES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_downloaded_images')
@@ -34,47 +43,54 @@ class EnvVars:
         self.database_port = os.getenv("DATABASE_PORT")
         self.database_name = os.getenv("DATABASE_NAME")
 
+
+def fetch_image_from_s3(uuid, bucket):
+    try:
+        s3_object = bucket.Object(uuid)
+        content_type = s3_object.content_type
+        extension = get_extension_from_content_type(content_type)
+        local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{uuid}{extension}")
+        
+        bucket.download_file(uuid, local_image_path)
+        logger.info(f"Image {uuid} downloaded")
+        return local_image_path
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            logger.error(f"Image {uuid} not found in bucket.")
+        else:
+            logger.error(f"Error fetching image {uuid} from S3: {e}")
+        return None
+
+
+def get_extension_from_content_type(content_type):
+    extensions = {
+        'image/jpeg': '.jpg',
+        'image/png': '.png'
+    }
+    return extensions.get(content_type, '.jpg')
+
+
+
 class ImageProcessor:
     def __init__(self, envs: EnvVars):
         self.envs = envs
         self.face_recognition = FaceRecognition()
-        self.connection = self.connect_to_database()
         os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
-    def connect_to_database(self):
-
-        url = f"postgresql://{self.envs.database_user}:{self.envs.database_password}@" \
-              f"{self.envs.database_host}:{self.envs.database_port}/{self.envs.database_name}"
-        try:
-            conn = psycopg.connect(url)
-            with conn.cursor() as cur:
-                cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
-            register_vector(conn)
-            logger.info("Connected to the database successfully and registered vector types.")
-            return conn
-        except Exception as e:
-            logger.error(f"Error connecting to the database: {e}")
-            raise
-
-    async def handle_request(self, message: Msg, bucket):
-        uuid = message.data.decode()
+    async def handle_face_request(self, image_path, db_conn):
         face_data = []
 
-        image_path = await self.fetch_image_from_s3(uuid, bucket)
         if image_path:
             face_data.extend(self.face_recognition.extract_face_embeddings(image_path))
         
-        self.insert_face_data_to_db(face_data)
-        os.remove(image_path)
+        self.insert_face_data_to_db(face_data, db_conn)
+        
 
-    def insert_face_data_to_db(self, face_data):
-        with self.connection.cursor() as cursor:
+    def insert_face_data_to_db(self, face_data, db_conn):
+        with db_conn.cursor() as cursor:
             for file_path, embedding, bb_coordinates, _ in face_data:
                 embedding_str = f"[{', '.join(map(str, embedding))}]"
-
                 bounding_box_str = f"{{ {', '.join(map(str, bb_coordinates))} }}"
-
-
                 media_id = os.path.basename(file_path).split('.')[0]
 
                 insert_query = """
@@ -89,30 +105,26 @@ class ImageProcessor:
                     inserted_id = cursor.fetchone()[0]
                     logger.info(f"Inserted face data for media_id {media_id} with id {inserted_id}.")
                 except Exception as e:
-                    self.connection.rollback()
+                    db_conn.rollback()
                     logger.error(f"Error inserting face data for media_id {media_id}: {e}")
                     continue
-                self.connection.commit()
+                db_conn.commit()
 
-    async def fetch_image_from_s3(self, uuid, bucket):
-        try:
-            s3_object = bucket.Object(uuid)
-            content_type = s3_object.content_type
-            extension = self.get_extension_from_content_type(content_type)
-            local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{uuid}{extension}")
-            bucket.download_file(uuid, local_image_path)
-            logger.info(f"Image {uuid} downloaded to {local_image_path}")
-            return local_image_path
-        except ClientError as e:
-            logger.error(f"Error fetching image {uuid} from S3: {e}")
-            return None
 
-    def get_extension_from_content_type(self, content_type):
-        extensions = {
-            'image/jpeg': '.jpg',
-            'image/png': '.png'
-        }
-        return extensions.get(content_type, '.jpg')
+
+def connect_to_database(envs: EnvVars):
+    url = f"postgresql://{envs.database_user}:{envs.database_password}@" \
+          f"{envs.database_host}:{envs.database_port}/{envs.database_name}"
+    try:
+        conn = psycopg.connect(url)
+        with conn.cursor() as cur:
+            cur.execute('CREATE EXTENSION IF NOT EXISTS vector')
+        register_vector(conn)
+        logger.info("Connected to the database successfully and registered vector types.")
+        return conn
+    except Exception as e:
+        logger.error(f"Error connecting to the database: {e}")
+        raise
 
 
 async def setup_bucket(envs: EnvVars):
@@ -134,17 +146,34 @@ async def setup_bucket(envs: EnvVars):
         raise
 
 
-async def message_handler(msg: Msg, image_processor: ImageProcessor, bucket):
-
+async def message_handler(msg: Msg, image_processor: ImageProcessor, bucket, db_conn):
     logging.info(f"Received message: {msg.data.decode()}")
-    await image_processor.handle_request(msg, bucket)
-    await msg.ack()
+    uuid = msg.data.decode()
+
+    image_path = fetch_image_from_s3(uuid, bucket)
+    if not image_path:
+        logging.error(f"Image {uuid} could not be downloaded. Skipping processing.")
+        await msg.ack()
+        return
+
+    try:
+        await image_processor.handle_face_request(image_path, db_conn)
+    except Exception as e:
+        logging.error(f"Error processing image {uuid}: {e}")
+    finally:
+        await msg.ack()
+
+    os.remove(image_path)
+
+
 
 async def main():
+
     load_dotenv()
     envs = EnvVars()
+    db_conn = connect_to_database(envs)
     bucket = await setup_bucket(envs)
-    logging.info("Bucket setup complete.")
+    logging.info("Loaded environment variables and connected to services.")
 
     image_processor = ImageProcessor(envs)
 
@@ -159,7 +188,7 @@ async def main():
             logging.error("Stream 'chronolens' not found or misconfigured. Attempting to create it.")
             await js.add_stream(name="chronolens", subjects=["machine-learning"], retention="workqueue")
 
-        sub = await js.subscribe("machine-learning", cb=lambda msg: asyncio.create_task(message_handler(msg, image_processor, bucket)))
+        sub = await js.subscribe("machine-learning", cb=lambda msg: asyncio.create_task(message_handler(msg, image_processor, bucket, db_conn)))
         logging.info("Subscribed to 'machine-learning'")
 
         while True:
@@ -167,8 +196,8 @@ async def main():
 
     except Exception as conn_error:
         logging.error(f"Failed to connect to NATS: {conn_error}")
-
-
+    finally:
+        db_conn.close()
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
