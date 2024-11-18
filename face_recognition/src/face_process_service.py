@@ -6,6 +6,9 @@ import psycopg
 import nats
 import torch
 import open_clip
+import time
+from pillow_heif import register_heif_opener
+register_heif_opener() # This is unfortunately necessary to open HEIF/HEIC images with PIL
 
 from PIL import Image
 from psycopg import sql
@@ -49,14 +52,34 @@ class EnvVars:
         self.database_name = os.getenv("DATABASE_NAME")
 
 
+
+def convert_heif_to_jpg(heif_path):
+    try:
+        with Image.open(heif_path) as image:
+            jpg_path = os.path.splitext(heif_path)[0] + ".jpg" 
+            image.save(jpg_path, "JPEG")
+            logger.info(f"Converted {heif_path} to {jpg_path}")
+            return jpg_path
+    except Exception as e:
+        logger.error(f"Error converting HEIF/HEIC image {heif_path} to JPG: {e}")
+        return None
+
 def fetch_image_from_s3(uuid, bucket):
     try:
         s3_object = bucket.Object(uuid)
         content_type = s3_object.content_type
         extension = get_extension_from_content_type(content_type)
+
         local_image_path = os.path.join(DOWNLOAD_IMAGES_PATH, f"{uuid}{extension}")
-        
+
         bucket.download_file(uuid, local_image_path)
+
+        if extension in [".heif", ".heic"]:
+            converted_path = convert_heif_to_jpg(local_image_path)
+            if converted_path:
+                os.remove(local_image_path) 
+                local_image_path = converted_path
+
         logger.info(f"Image {uuid} downloaded")
         return local_image_path
     except ClientError as e:
@@ -70,7 +93,11 @@ def fetch_image_from_s3(uuid, bucket):
 def get_extension_from_content_type(content_type):
     extensions = {
         'image/jpeg': '.jpg',
-        'image/png': '.png'
+        'image/png': '.png',
+
+        # libheif and heic heif
+        'image/heif': '.heif',
+        'image/heic': '.heic'
     }
     return extensions.get(content_type, '.jpg')
 
@@ -100,7 +127,7 @@ class ClipImageProcessor:
         return image_features
 
 
-    def update_clip_embedding_in_db(self, image_path, db_conn):
+    def generate_and_update_clip_embeddings(self, image_path, db_conn):
         embedding = self.generate_embedding(image_path)
         embedding_str = f"[{', '.join(map(str, embedding.cpu().numpy().flatten()))}]"
         media_id = os.path.basename(image_path).split('.')[0]
@@ -135,14 +162,12 @@ class ImageProcessor:
 
     async def handle_face_request(self, image_path, db_conn):
         face_data = []
-        clip_data = []
 
         if image_path:
             
             face_data.extend(self.face_recognition.extract_face_embeddings(image_path))
             
-            
-            self.clip_processor.update_clip_embedding_in_db(image_path, db_conn)
+            self.clip_processor.generate_and_update_clip_embeddings(image_path, db_conn)
 
         
         self.insert_face_data_to_db(face_data, db_conn)
@@ -209,6 +234,8 @@ async def setup_bucket(envs: EnvVars):
 
 
 async def message_handler(msg: Msg, image_processor: ImageProcessor, bucket, db_conn):
+    # sleep_time = 1 # for debugging bulk uploads
+    # time.sleep(sleep_time)
     logging.info(f"Received message: {msg.data.decode()}")
     uuid = msg.data.decode()
 
