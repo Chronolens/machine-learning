@@ -4,13 +4,18 @@ import logging
 import boto3
 import psycopg
 import nats
+import torch
+import open_clip
 
+from PIL import Image
 from psycopg import sql
 from dotenv import load_dotenv
 from nats.aio.msg import Msg
 from botocore.exceptions import ClientError
 from face_recognition import FaceRecognition
 from pgvecto_rs.psycopg import register_vector
+
+
 
 import warnings # This warning comes from the insightface library TODO: I should fix it in the future
 warnings.filterwarnings("ignore", message="`rcond` parameter will change to the default of machine precision times")
@@ -71,20 +76,77 @@ def get_extension_from_content_type(content_type):
 
 
 
+class ClipImageProcessor:
+
+    def __init__(self, envs):
+        self.envs = envs
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_name = "ViT-B-16" 
+        self.pretrained_dataset = "datacomp_l_s1b_b8k" 
+        self.embeddings_folder = "./embeddings" 
+        
+        self.model, _, preprocess_val = open_clip.create_model_and_transforms(self.model_name, pretrained=self.pretrained_dataset)
+        self.model.to(self.device)
+        self.preprocess = preprocess_val
+        
+        if not os.path.exists(self.embeddings_folder):
+            os.makedirs(self.embeddings_folder)
+
+    def generate_embedding(self, image_path):
+        image = self.preprocess(Image.open(image_path)).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            image_features = self.model.encode_image(image)
+            image_features /= image_features.norm(dim=-1, keepdim=True) 
+        return image_features
+
+
+    def update_clip_embedding_in_db(self, image_path, db_conn):
+        embedding = self.generate_embedding(image_path)
+        embedding_str = f"[{', '.join(map(str, embedding.cpu().numpy().flatten()))}]"
+        media_id = os.path.basename(image_path).split('.')[0]
+
+        update_query = """
+            UPDATE media
+            SET clip_embeddings = %s::vector
+            WHERE id = %s
+            RETURNING id;
+        """
+        params = (embedding_str, media_id)
+
+        try:
+            with db_conn.cursor() as cursor:
+                cursor.execute(sql.SQL(update_query), params)
+                updated_id = cursor.fetchone()[0]
+                logger.info(f"Updated CLIP embedding for media_id {media_id}")
+                db_conn.commit()
+        except Exception as e:
+            db_conn.rollback()
+            logger.error(f"Error updating CLIP embedding for media_id {media_id}: {e}")
+
+
+
+
 class ImageProcessor:
     def __init__(self, envs: EnvVars):
         self.envs = envs
         self.face_recognition = FaceRecognition()
+        self.clip_processor = ClipImageProcessor(envs) 
         os.makedirs(DOWNLOAD_IMAGES_PATH, exist_ok=True)
 
     async def handle_face_request(self, image_path, db_conn):
         face_data = []
+        clip_data = []
 
         if image_path:
+            
             face_data.extend(self.face_recognition.extract_face_embeddings(image_path))
+            
+            
+            self.clip_processor.update_clip_embedding_in_db(image_path, db_conn)
+
         
         self.insert_face_data_to_db(face_data, db_conn)
-        
+
 
     def insert_face_data_to_db(self, face_data, db_conn):
         with db_conn.cursor() as cursor:
