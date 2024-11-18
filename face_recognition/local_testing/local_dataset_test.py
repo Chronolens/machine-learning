@@ -1,10 +1,10 @@
 import os
 import csv
-from local_testing.face_recognition_toCSV import FaceRecognition
+from face_recognition_toCSV import FaceRecognition
 import time
 import logging
 
-photo_path = "C:\\Users\\Despacito4\\Desktop\\test_images\\large_dataset"
+photo_path = "C:\\Users\\Despacito4\\Desktop\\test_images\\small_dataset"
 
 
 def main():

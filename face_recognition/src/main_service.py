@@ -5,7 +5,7 @@ import face_process_service
 import cluster_embeddings
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("main_face_launcher")
+logger = logging.getLogger("main_service")
 
 def run_face_process_service():
     try:
