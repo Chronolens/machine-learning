@@ -271,14 +271,14 @@ async def main():
         js = nc.jetstream()
 
         try:
-            stream_info = await js.stream_info("chronolens")
+            stream_info = await js.stream_info("machine-learning")
             logging.info(f"Stream info: {stream_info}")
         except Exception as e:
-            logging.error("Stream 'chronolens' not found or misconfigured. Attempting to create it.")
-            await js.add_stream(name="chronolens", subjects=["machine-learning"], retention="workqueue")
+            logging.error("Stream 'machine-learning' not found or misconfigured. Attempting to create it.")
+            await js.add_stream(name="machine-learning", subjects=["image-process","clip-process"], retention="workqueue")
 
-        sub = await js.subscribe("machine-learning", cb=lambda msg: asyncio.create_task(message_handler(msg, image_processor, bucket, db_conn)))
-        logging.info("Subscribed to 'machine-learning'")
+        sub = await js.subscribe("image-process", cb=lambda msg: asyncio.create_task(message_handler(msg, image_processor, bucket, db_conn)))
+        logging.info("Subscribed to 'image-process'")
 
         while True:
             await asyncio.sleep(5)

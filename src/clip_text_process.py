@@ -42,7 +42,6 @@ class ClipTextProcessor:
         self.tokenizer = open_clip.get_tokenizer(self.model_name)
 
     def generate_text_embedding(self, text):
-        """Generate a text embedding using the CLIP model."""
         with torch.no_grad():
             text_tokenized = self.tokenizer([text]).to(self.device)
             text_features = self.model.encode_text(text_tokenized)
@@ -50,12 +49,12 @@ class ClipTextProcessor:
         return text_features.cpu().numpy().flatten()
 
     def fetch_media_embeddings(self, db_conn):
-        """Retrieve media embeddings from the database."""
         query = "SELECT id, clip_embeddings FROM media WHERE clip_embeddings IS NOT NULL"
         try:
             with db_conn.cursor() as cursor:
                 cursor.execute(query)
                 results = cursor.fetchall()
+
                 media_data = [(row[0], np.array(json.loads(row[1]))) for row in results]
                 logger.info(f"Fetched {len(media_data)} media embeddings from the database.")
                 return media_data
@@ -66,10 +65,18 @@ class ClipTextProcessor:
     def compare_and_save_matches_to_file(self, text, text_embedding, media_data):
         """Compare text embedding to media embeddings and save matches to a file."""
         try:
-            matching_ids = [
-                media_id for media_id, media_embedding in media_data
-                if 1 - cosine(text_embedding, media_embedding) > 0.3
-            ]
+            matching_ids = []
+
+            
+            for media_id, media_embedding in media_data:
+                
+                similarity = 1 - cosine(text_embedding, media_embedding)  
+                # logger.info(f"Similarity: {similarity}")
+
+                
+                if similarity > 0.3:
+                    matching_ids.append(media_id)
+
             if not matching_ids:
                 logger.info("No matching media found.")
                 return
@@ -88,6 +95,31 @@ class ClipTextProcessor:
 
 
 
+async def message_handler(msg, clip_text_processor, db_conn):
+    """Handle incoming NATS messages."""
+    logging.info(f"Received message: {msg.data.decode()}")
+    try:
+        text = msg.data.decode().strip()
+
+        if not text:
+            raise ValueError("Received empty text message.")
+
+        text_embedding = clip_text_processor.generate_text_embedding(text)
+        
+        media_data = clip_text_processor.fetch_media_embeddings(db_conn)
+        
+        clip_text_processor.compare_and_save_matches_to_file(text, text_embedding, media_data)
+    except Exception as e:
+        logging.error(f"Error processing message: {e}")
+    finally:
+        await msg.ack()
+
+
+
+
+
+
+
 def connect_to_database(envs: EnvVars):
     """Establish connection to the database."""
     url = f"postgresql://{envs.database_user}:{envs.database_password}@" \
@@ -100,25 +132,6 @@ def connect_to_database(envs: EnvVars):
         logger.error(f"Error connecting to the database: {e}")
         raise
 
-
-async def message_handler(msg, clip_text_processor, db_conn):
-    """Handle incoming NATS messages."""
-    logging.info(f"Received message: {msg.data.decode()}")
-    try:
-        
-        text = msg.data.decode().strip()  
-
-        if not text:
-            raise ValueError("Received empty text message.")
-
-        
-        text_embedding = clip_text_processor.generate_text_embedding(text)
-        media_data = clip_text_processor.fetch_media_embeddings(db_conn)
-        clip_text_processor.compare_and_save_matches_to_file(text, text_embedding, media_data)
-    except Exception as e:
-        logging.error(f"Error processing message: {e}")
-    finally:
-        await msg.ack()
 
 
 async def main():
@@ -133,15 +146,15 @@ async def main():
         js = nc.jetstream()
 
         try:
-            stream_info = await js.stream_info("chronolens")
+            stream_info = await js.stream_info("machine-learning")
             logging.info(f"Stream info: {stream_info}")
         except Exception as e:
-            logging.error("Stream 'chronolens' not found or misconfigured. Attempting to create it.")
-            await js.add_stream(name="chronolens", subjects=["clip_process"], retention="workqueue")
+            logging.error("Stream 'machine-learning' not found or misconfigured. Attempting to create it.")
+            await js.add_stream(name="machine-learning", subjects=["image-process","clip-process"], retention="workqueue")
 
         
-        sub = await js.subscribe("clip_process", cb=lambda msg: asyncio.create_task(message_handler(msg, clip_text_processor, db_conn)))
-        logging.info("Subscribed to 'clip_process' stream.")
+        sub = await js.subscribe("clip-process", cb=lambda msg: asyncio.create_task(message_handler(msg, clip_text_processor, db_conn)))
+        logging.info("Subscribed to 'clip-process' stream.")
 
         
         while True:
