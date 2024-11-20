@@ -68,23 +68,25 @@ class ClipTextProcessor:
             text_features /= text_features.norm(dim=-1, keepdim=True)
         return text_features.cpu().numpy().flatten()
 
-    def fetch_media_embeddings(self, db_conn):
-        query = "SELECT id, preview_id, clip_embeddings FROM media WHERE clip_embeddings IS NOT NULL"
+    def fetch_media_embeddings(self, db_conn, user_id):
+
+        query = sql.SQL("SELECT id, preview_id, clip_embeddings FROM media WHERE clip_embeddings IS NOT NULL AND user_id = %s")
+        
         try:
             with db_conn.cursor() as cursor:
-                cursor.execute(query)
+                cursor.execute(query, (user_id,))
                 results = cursor.fetchall()
 
-                
+              
                 media_data = [(row[0], row[1], np.array(json.loads(row[2]))) for row in results]
-                logger.info(f"Fetched {len(media_data)} media embeddings from the database.")
+                logger.info(f"Fetched {len(media_data)} media embeddings for user {user_id}.")
                 return media_data
         except Exception as e:
-            logger.error(f"Error fetching media embeddings: {e}")
+            logger.error(f"Error fetching media embeddings for user {user_id}: {e}")
             return []
 
+
     def generate_presigned_url(self, preview_id: str):
-        """Generate a presigned URL for accessing the preview."""
         try:
             url = self.s3_client.generate_presigned_url(
                 'get_object',
@@ -100,7 +102,6 @@ class ClipTextProcessor:
             return None
 
     def compare_and_save_matches_to_file(self, text, text_embedding, media_data):
-        """Compare text embedding to media embeddings and save matches to a file."""
         try:
             matching_data = []
 
@@ -134,27 +135,30 @@ class ClipTextProcessor:
 
 
 async def message_handler(msg, clip_text_processor, db_conn):
-    """Handle incoming NATS messages."""
     logging.info(f"Received message: {msg.data.decode()}")
-    try:
-        text = msg.data.decode().strip()
-
-        if not text:
+    try:      
+        message = json.loads(msg.data.decode())              
+        user_id = message.get("user_id")
+        query = message.get("query")
+        
+        if not query:
             raise ValueError("Received empty text message.")
+        
+        logging.info(f"Processing query from user: {user_id}, query: {query}")
 
-        text_embedding = clip_text_processor.generate_text_embedding(text)
+        text_embedding = clip_text_processor.generate_text_embedding(query)
         
-        media_data = clip_text_processor.fetch_media_embeddings(db_conn)
+        media_data = clip_text_processor.fetch_media_embeddings(db_conn, user_id)
         
-        clip_text_processor.compare_and_save_matches_to_file(text, text_embedding, media_data)
+        clip_text_processor.compare_and_save_matches_to_file(query, text_embedding, media_data)
     except Exception as e:
         logging.error(f"Error processing message: {e}")
     finally:
         await msg.ack()
 
 
+
 def connect_to_database(envs: EnvVars):
-    """Establish connection to the database."""
     url = f"postgresql://{envs.database_user}:{envs.database_password}@" \
           f"{envs.database_host}:{envs.database_port}/{envs.database_name}"
     try:
@@ -168,7 +172,6 @@ def connect_to_database(envs: EnvVars):
 
 
 async def main():
-    """Main function to set up services and event loop."""
     load_dotenv()
     envs = EnvVars()
     db_conn = connect_to_database(envs)
