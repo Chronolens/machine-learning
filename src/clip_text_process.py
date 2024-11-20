@@ -10,6 +10,8 @@ import numpy as np
 from dotenv import load_dotenv
 from psycopg import sql
 from scipy.spatial.distance import cosine
+import boto3
+from botocore.exceptions import NoCredentialsError
 
 
 logging.basicConfig(
@@ -25,6 +27,12 @@ os.makedirs(MATCH_OUTPUT_FOLDER, exist_ok=True)
 class EnvVars:
     def __init__(self):
         self.nats_endpoint = os.getenv("NATS_ENDPOINT")
+        self.object_storage_endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT")
+        self.object_storage_bucket = os.getenv("OBJECT_STORAGE_BUCKET")
+        self.object_storage_region = os.getenv("OBJECT_STORAGE_REGION")
+        self.object_storage_access_key = os.getenv("OBJECT_STORAGE_ACCESS_KEY")
+        self.object_storage_secret_key = os.getenv("OBJECT_STORAGE_SECRET_KEY")
+
         self.database_host = os.getenv("DATABASE_HOST")
         self.database_user = os.getenv("DATABASE_USERNAME")
         self.database_password = os.getenv("DATABASE_PASSWORD")
@@ -33,13 +41,25 @@ class EnvVars:
 
 
 class ClipTextProcessor:
-    def __init__(self):
+    def __init__(self, envs: EnvVars):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model_name = "ViT-B-16"
         self.pretrained_dataset = "datacomp_l_s1b_b8k"
         self.model, _, _ = open_clip.create_model_and_transforms(self.model_name, pretrained=self.pretrained_dataset)
         self.model.to(self.device)
         self.tokenizer = open_clip.get_tokenizer(self.model_name)
+        
+        
+        self.envs = envs
+
+        
+        self.s3_client = boto3.client(
+            's3',
+            endpoint_url=self.envs.object_storage_endpoint,
+            aws_access_key_id=self.envs.object_storage_access_key,
+            aws_secret_access_key=self.envs.object_storage_secret_key,
+            region_name=self.envs.object_storage_region
+        )
 
     def generate_text_embedding(self, text):
         with torch.no_grad():
@@ -49,50 +69,68 @@ class ClipTextProcessor:
         return text_features.cpu().numpy().flatten()
 
     def fetch_media_embeddings(self, db_conn):
-        query = "SELECT id, clip_embeddings FROM media WHERE clip_embeddings IS NOT NULL"
+        query = "SELECT id, preview_id, clip_embeddings FROM media WHERE clip_embeddings IS NOT NULL"
         try:
             with db_conn.cursor() as cursor:
                 cursor.execute(query)
                 results = cursor.fetchall()
 
-                media_data = [(row[0], np.array(json.loads(row[1]))) for row in results]
+                
+                media_data = [(row[0], row[1], np.array(json.loads(row[2]))) for row in results]
                 logger.info(f"Fetched {len(media_data)} media embeddings from the database.")
                 return media_data
         except Exception as e:
             logger.error(f"Error fetching media embeddings: {e}")
             return []
 
+    def generate_presigned_url(self, preview_id: str):
+        """Generate a presigned URL for accessing the preview."""
+        try:
+            url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.envs.object_storage_bucket, 'Key': preview_id},
+                ExpiresIn=86400  
+            )
+            return url
+        except NoCredentialsError:
+            logger.error("No credentials found for generating presigned URL.")
+            return None
+        except Exception as e:
+            logger.error(f"Error generating presigned URL: {e}")
+            return None
+
     def compare_and_save_matches_to_file(self, text, text_embedding, media_data):
         """Compare text embedding to media embeddings and save matches to a file."""
         try:
-            matching_ids = []
+            matching_data = []
 
-            
-            for media_id, media_embedding in media_data:
-                
+            for media_id, preview_id, media_embedding in media_data:
                 similarity = 1 - cosine(text_embedding, media_embedding)  
-                # logger.info(f"Similarity: {similarity}")
 
-                
                 if similarity > 0.3:
-                    matching_ids.append(media_id)
+                    
+                    presigned_url = self.generate_presigned_url(preview_id)
+                    if presigned_url:
+                        matching_data.append({
+                            "media_id": media_id,
+                            "preview_url": presigned_url,  
+                            "similarity": similarity
+                        })
 
-            if not matching_ids:
+            if not matching_data:
                 logger.info("No matching media found.")
                 return
 
-            
             match_file = os.path.join(MATCH_OUTPUT_FOLDER, f"matches_{text[:20].replace(' ', '_')}.json")
             match_data = {
                 "text": text,
-                "matching_media_ids": matching_ids
+                "matching_media": matching_data
             }
             with open(match_file, "w") as f:
                 json.dump(match_data, f, indent=4)
-            logger.info(f"Saved {len(matching_ids)} matches to {match_file}.")
+            logger.info(f"Saved {len(matching_data)} matches to {match_file}.")
         except Exception as e:
             logger.error(f"Error comparing embeddings or saving matches to file: {e}")
-
 
 
 async def message_handler(msg, clip_text_processor, db_conn):
@@ -115,11 +153,6 @@ async def message_handler(msg, clip_text_processor, db_conn):
         await msg.ack()
 
 
-
-
-
-
-
 def connect_to_database(envs: EnvVars):
     """Establish connection to the database."""
     url = f"postgresql://{envs.database_user}:{envs.database_password}@" \
@@ -139,7 +172,7 @@ async def main():
     load_dotenv()
     envs = EnvVars()
     db_conn = connect_to_database(envs)
-    clip_text_processor = ClipTextProcessor()
+    clip_text_processor = ClipTextProcessor(envs)
 
     try:
         nc = await nats.connect(envs.nats_endpoint)
