@@ -107,14 +107,13 @@ class ClipTextProcessor:
             return []
 
 
-    def compare_and_save_matches_to_file(self, text, text_embedding, media_data, page, pagesize):
+    def get_matching_media(self, text_embedding, media_data, page, pagesize):
         try:
             matching_data = []
-            
+
             for media_id, preview_id, media_embedding in media_data:
                 similarity = 1 - cosine(text_embedding, media_embedding)
-                # logger.info(f"Similarity for media_id {media_id}: {similarity}")
-                
+
                 if similarity > 0.3:
                     presigned_url = self.generate_presigned_url(preview_id)
                     if presigned_url:
@@ -127,21 +126,12 @@ class ClipTextProcessor:
             paged_data = matching_data[offset:offset + pagesize]
 
             if not paged_data:
-                logger.info(f"No matching media found for page {page}.")
-                return
+                logging.info(f"No matching media found for page {page}.")
 
-            match_file = os.path.join(MATCH_OUTPUT_FOLDER, f"matches_{text[:20].replace(' ', '_')}_page_{page}.json")
-            match_data = {
-                "text": text,
-                "page": page,
-                "pagesize": pagesize,
-                "matching_media": paged_data
-            }
-            with open(match_file, "w") as f:
-                json.dump(match_data, f, indent=4)
-            logger.info(f"Saved {len(paged_data)} matches to {match_file}.")
+            return paged_data
         except Exception as e:
-            logger.error(f"Error comparing embeddings or saving matches to file: {e}")
+            logging.error(f"Error comparing embeddings: {e}")
+            return []
 
 
 
@@ -151,25 +141,31 @@ async def message_handler(msg, clip_text_processor, db_conn):
         message = json.loads(msg.data.decode())
         user_id = message.get("user_id")
         query = message.get("query")
-        page = message.get("page", 1) 
+        page = message.get("page", 1)
         pagesize = message.get("page_size", 10)
 
         if not query:
             raise ValueError("Received empty text message.")
 
-        # logging.info(f"Processing query from user: {user_id}, query: {query}, page: {page}, pagesize: {pagesize}")
-     
         text_embedding = clip_text_processor.generate_text_embedding(query)
-       
+
         media_data = clip_text_processor.fetch_media_embeddings(db_conn, user_id)
-       
-        clip_text_processor.compare_and_save_matches_to_file(query, text_embedding, media_data, page, pagesize)
 
+        matching_media = clip_text_processor.get_matching_media(text_embedding, media_data, page, pagesize)
 
+        response_payload = json.dumps(matching_media)
+
+        logging.info(f"Responding with payload: {response_payload}")
+
+        await msg.respond(response_payload.encode('utf-8'))
+        logging.info(f"Responded with {len(matching_media)} matches.")
     except Exception as e:
         logging.error(f"Error processing message: {e}")
+        error_response = {"error": str(e)}
+        await msg.respond(json.dumps(error_response).encode('utf-8'))
     finally:
         await msg.ack()
+
 
 
 
