@@ -61,29 +61,13 @@ class ClipTextProcessor:
             region_name=self.envs.object_storage_region
         )
 
+
     def generate_text_embedding(self, text):
         with torch.no_grad():
             text_tokenized = self.tokenizer([text]).to(self.device)
             text_features = self.model.encode_text(text_tokenized)
             text_features /= text_features.norm(dim=-1, keepdim=True)
         return text_features.cpu().numpy().flatten()
-
-    def fetch_media_embeddings(self, db_conn, user_id):
-
-        query = sql.SQL("SELECT id, preview_id, clip_embeddings FROM media WHERE clip_embeddings IS NOT NULL AND user_id = %s")
-        
-        try:
-            with db_conn.cursor() as cursor:
-                cursor.execute(query, (user_id,))
-                results = cursor.fetchall()
-
-              
-                media_data = [(row[0], row[1], np.array(json.loads(row[2]))) for row in results]
-                logger.info(f"Fetched {len(media_data)} media embeddings for user {user_id}.")
-                return media_data
-        except Exception as e:
-            logger.error(f"Error fetching media embeddings for user {user_id}: {e}")
-            return []
 
 
     def generate_presigned_url(self, preview_id: str):
@@ -101,60 +85,92 @@ class ClipTextProcessor:
             logger.error(f"Error generating presigned URL: {e}")
             return None
 
-    def compare_and_save_matches_to_file(self, text, text_embedding, media_data):
+
+    def fetch_media_embeddings(self, db_conn, user_id):
+        query = sql.SQL("""
+            SELECT id, preview_id, clip_embeddings 
+            FROM media 
+            WHERE clip_embeddings IS NOT NULL AND user_id = %s
+            ORDER BY created_at DESC
+        """)
+
+        try:
+            with db_conn.cursor() as cursor:
+                cursor.execute(query, (user_id,))
+                results = cursor.fetchall()
+
+                media_data = [(row[0], row[1], np.array(json.loads(row[2]))) for row in results]
+                logger.info(f"Fetched {len(media_data)} media embeddings for user {user_id}.")
+                return media_data
+        except Exception as e:
+            logger.error(f"Error fetching media embeddings for user {user_id}: {e}")
+            return []
+
+
+    def compare_and_save_matches_to_file(self, text, text_embedding, media_data, page, pagesize):
         try:
             matching_data = []
-
+            
             for media_id, preview_id, media_embedding in media_data:
-                similarity = 1 - cosine(text_embedding, media_embedding)  
-
+                similarity = 1 - cosine(text_embedding, media_embedding)
+                # logger.info(f"Similarity for media_id {media_id}: {similarity}")
+                
                 if similarity > 0.3:
-                    
                     presigned_url = self.generate_presigned_url(preview_id)
                     if presigned_url:
                         matching_data.append({
                             "media_id": media_id,
-                            "preview_url": presigned_url,  
-                            "similarity": similarity
+                            "preview_url": presigned_url
                         })
 
-            if not matching_data:
-                logger.info("No matching media found.")
+            offset = (page - 1) * pagesize
+            paged_data = matching_data[offset:offset + pagesize]
+
+            if not paged_data:
+                logger.info(f"No matching media found for page {page}.")
                 return
 
-            match_file = os.path.join(MATCH_OUTPUT_FOLDER, f"matches_{text[:20].replace(' ', '_')}.json")
+            match_file = os.path.join(MATCH_OUTPUT_FOLDER, f"matches_{text[:20].replace(' ', '_')}_page_{page}.json")
             match_data = {
                 "text": text,
-                "matching_media": matching_data
+                "page": page,
+                "pagesize": pagesize,
+                "matching_media": paged_data
             }
             with open(match_file, "w") as f:
                 json.dump(match_data, f, indent=4)
-            logger.info(f"Saved {len(matching_data)} matches to {match_file}.")
+            logger.info(f"Saved {len(paged_data)} matches to {match_file}.")
         except Exception as e:
             logger.error(f"Error comparing embeddings or saving matches to file: {e}")
 
 
+
 async def message_handler(msg, clip_text_processor, db_conn):
     logging.info(f"Received message: {msg.data.decode()}")
-    try:      
-        message = json.loads(msg.data.decode())              
+    try:
+        message = json.loads(msg.data.decode())
         user_id = message.get("user_id")
         query = message.get("query")
-        
+        page = message.get("page", 1) 
+        pagesize = message.get("page_size", 10)
+
         if not query:
             raise ValueError("Received empty text message.")
-        
-        logging.info(f"Processing query from user: {user_id}, query: {query}")
 
+        # logging.info(f"Processing query from user: {user_id}, query: {query}, page: {page}, pagesize: {pagesize}")
+     
         text_embedding = clip_text_processor.generate_text_embedding(query)
-        
+       
         media_data = clip_text_processor.fetch_media_embeddings(db_conn, user_id)
-        
-        clip_text_processor.compare_and_save_matches_to_file(query, text_embedding, media_data)
+       
+        clip_text_processor.compare_and_save_matches_to_file(query, text_embedding, media_data, page, pagesize)
+
+
     except Exception as e:
         logging.error(f"Error processing message: {e}")
     finally:
         await msg.ack()
+
 
 
 
