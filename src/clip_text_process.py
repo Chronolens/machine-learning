@@ -13,13 +13,12 @@ from scipy.spatial.distance import cosine
 import boto3
 from botocore.exceptions import NoCredentialsError
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-logger = logging.getLogger("clip_text_processor_service")
+logging = logging.getLogger("clip_text_processor_service")
 
 MATCH_OUTPUT_FOLDER = "./matches"
 os.makedirs(MATCH_OUTPUT_FOLDER, exist_ok=True)
@@ -49,9 +48,7 @@ class ClipTextProcessor:
         self.model.to(self.device)
         self.tokenizer = open_clip.get_tokenizer(self.model_name)
         
-        
         self.envs = envs
-
         
         self.s3_client = boto3.client(
             's3',
@@ -61,7 +58,6 @@ class ClipTextProcessor:
             region_name=self.envs.object_storage_region
         )
 
-
     def generate_text_embedding(self, text):
         with torch.no_grad():
             text_tokenized = self.tokenizer([text]).to(self.device)
@@ -69,22 +65,20 @@ class ClipTextProcessor:
             text_features /= text_features.norm(dim=-1, keepdim=True)
         return text_features.cpu().numpy().flatten()
 
-
     def generate_presigned_url(self, preview_id: str):
         try:
             url = self.s3_client.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': self.envs.object_storage_bucket, 'Key': preview_id},
-                ExpiresIn=86400  
+                ExpiresIn=86400 
             )
             return url
         except NoCredentialsError:
-            logger.error("No credentials found for generating presigned URL.")
+            logging.error("No credentials found for generating presigned URL.")
             return None
         except Exception as e:
-            logger.error(f"Error generating presigned URL: {e}")
+            logging.error(f"Error generating presigned URL: {e}")
             return None
-
 
     def fetch_media_embeddings(self, db_conn, user_id):
         query = sql.SQL("""
@@ -98,41 +92,33 @@ class ClipTextProcessor:
             with db_conn.cursor() as cursor:
                 cursor.execute(query, (user_id,))
                 results = cursor.fetchall()
-
                 media_data = [(row[0], row[1], np.array(json.loads(row[2]))) for row in results]
-                logger.info(f"Fetched {len(media_data)} media embeddings for user {user_id}.")
+                logging.info(f"Fetched {len(media_data)} media embeddings for user {user_id}.")
                 return media_data
         except Exception as e:
-            logger.error(f"Error fetching media embeddings for user {user_id}: {e}")
+            logging.error(f"Error fetching media embeddings for user {user_id}: {e}")
             return []
-
 
     def get_matching_media(self, text_embedding, media_data, page, pagesize):
         try:
             matching_data = []
-
             for media_id, preview_id, media_embedding in media_data:
                 similarity = 1 - cosine(text_embedding, media_embedding)
-
                 if similarity > 0.3:
                     presigned_url = self.generate_presigned_url(preview_id)
                     if presigned_url:
                         matching_data.append({
-                            "media_id": media_id,
+                            "id": media_id,
                             "preview_url": presigned_url
                         })
-
             offset = (page - 1) * pagesize
             paged_data = matching_data[offset:offset + pagesize]
-
             if not paged_data:
                 logging.info(f"No matching media found for page {page}.")
-
             return paged_data
         except Exception as e:
             logging.error(f"Error comparing embeddings: {e}")
             return []
-
 
 
 async def message_handler(msg, clip_text_processor, db_conn):
@@ -155,8 +141,6 @@ async def message_handler(msg, clip_text_processor, db_conn):
 
         response_payload = json.dumps(matching_media)
 
-        logging.info(f"Responding with payload: {response_payload}")
-
         await msg.respond(response_payload.encode('utf-8'))
         logging.info(f"Responded with {len(matching_media)} matches.")
     except Exception as e:
@@ -167,20 +151,16 @@ async def message_handler(msg, clip_text_processor, db_conn):
         await msg.ack()
 
 
-
-
-
 def connect_to_database(envs: EnvVars):
     url = f"postgresql://{envs.database_user}:{envs.database_password}@" \
           f"{envs.database_host}:{envs.database_port}/{envs.database_name}"
     try:
         conn = psycopg.connect(url)
-        logger.info("Connected to the database successfully.")
+        logging.info("Connected to the database successfully.")
         return conn
     except Exception as e:
-        logger.error(f"Error connecting to the database: {e}")
+        logging.error(f"Error connecting to the database: {e}")
         raise
-
 
 
 async def main():
@@ -191,20 +171,14 @@ async def main():
 
     try:
         nc = await nats.connect(envs.nats_endpoint)
-        js = nc.jetstream()
+        logging.info("Connected to NATS server.")
 
-        try:
-            stream_info = await js.stream_info("machine-learning")
-            logging.info(f"Stream info: {stream_info}")
-        except Exception as e:
-            logging.error("Stream 'machine-learning' not found or misconfigured. Attempting to create it.")
-            await js.add_stream(name="machine-learning", subjects=["image-process","clip-process"], retention="workqueue")
+        async def cb(msg):
+            await message_handler(msg, clip_text_processor, db_conn)
 
-        
-        sub = await js.subscribe("clip-process", cb=lambda msg: asyncio.create_task(message_handler(msg, clip_text_processor, db_conn)))
-        logging.info("Subscribed to 'clip-process' stream.")
+        await nc.subscribe("clip-process-alt", cb=cb)
+        logging.info("Subscribed to 'clip-process' subject.")
 
-        
         while True:
             await asyncio.sleep(5)
 
@@ -212,7 +186,6 @@ async def main():
         logging.error(f"Error in main: {e}")
     finally:
         db_conn.close()
-
 
 
 if __name__ == '__main__':
