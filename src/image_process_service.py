@@ -275,7 +275,7 @@ async def main():
             logging.info(f"Stream info: {stream_info}")
         except Exception as e:
             logging.error("Stream 'machine-learning' not found or misconfigured. Attempting to create it.")
-            await js.add_stream(name="machine-learning", subjects=["image-process","clip-process"], retention="workqueue")
+            await js.add_stream(name="machine-learning", subjects=["image-process"], retention="workqueue")
 
         sub = await js.subscribe("image-process", cb=lambda msg: asyncio.create_task(message_handler(msg, image_processor, bucket, db_conn)))
         logging.info("Subscribed to 'image-process'")
