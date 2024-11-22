@@ -176,7 +176,7 @@ async def main():
         async def cb(msg):
             await message_handler(msg, clip_text_processor, db_conn)
 
-        await nc.subscribe("clip-process-alt", cb=cb)
+        await nc.subscribe("clip-process-search", cb=cb)
         logging.info("Subscribed to 'clip-process' subject.")
 
         while True:
