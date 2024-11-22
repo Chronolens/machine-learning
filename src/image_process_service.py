@@ -108,6 +108,7 @@ class ClipImageProcessor:
     def __init__(self, envs):
         self.envs = envs
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logging.info(f"Using device: {self.device}")
         self.model_name = "ViT-B-16" 
         self.pretrained_dataset = "datacomp_l_s1b_b8k" 
         self.embeddings_folder = "./embeddings" 
@@ -120,10 +121,12 @@ class ClipImageProcessor:
             os.makedirs(self.embeddings_folder)
 
     def generate_embedding(self, image_path):
+        start_time = time.time()
         image = self.preprocess(Image.open(image_path)).unsqueeze(0).to(self.device)
         with torch.no_grad():
             image_features = self.model.encode_image(image)
             image_features /= image_features.norm(dim=-1, keepdim=True) 
+        logger.info(f"Generated CLIP embedding in {time.time() - start_time:.3f} seconds.")
         return image_features
 
 

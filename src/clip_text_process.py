@@ -99,7 +99,7 @@ class ClipTextProcessor:
             logging.error(f"Error fetching media embeddings for user {user_id}: {e}")
             return []
 
-    def get_matching_media(self, text_embedding, media_data, page, pagesize):
+    def get_matching_media(self, text_embedding, media_data, page, page_size):
         try:
             matching_data = []
             for media_id, preview_id, media_embedding in media_data:
@@ -111,8 +111,8 @@ class ClipTextProcessor:
                             "id": media_id,
                             "preview_url": presigned_url
                         })
-            offset = (page - 1) * pagesize
-            paged_data = matching_data[offset:offset + pagesize]
+            offset = (page - 1) * page_size
+            paged_data = matching_data[offset:offset + page_size]
             if not paged_data:
                 logging.info(f"No matching media found for page {page}.")
             return paged_data
@@ -128,7 +128,7 @@ async def message_handler(msg, clip_text_processor, db_conn):
         user_id = message.get("user_id")
         query = message.get("query")
         page = message.get("page", 1)
-        pagesize = message.get("page_size", 10)
+        page_size = message.get("page_size", 10)
 
         if not query:
             raise ValueError("Received empty text message.")
@@ -137,7 +137,7 @@ async def message_handler(msg, clip_text_processor, db_conn):
 
         media_data = clip_text_processor.fetch_media_embeddings(db_conn, user_id)
 
-        matching_media = clip_text_processor.get_matching_media(text_embedding, media_data, page, pagesize)
+        matching_media = clip_text_processor.get_matching_media(text_embedding, media_data, page, page_size)
 
         response_payload = json.dumps(matching_media)
 
