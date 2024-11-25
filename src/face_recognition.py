@@ -58,11 +58,3 @@ class FaceRecognition:
                 face_data.extend(face_embeddings)
         
         return face_data
-
-    def compare_all_faces(self, face_data):
-        for i, (file1, face_idx1, embedding1, _) in enumerate(face_data):
-            for j, (file2, face_idx2, embedding2, _) in enumerate(face_data):
-                if i != j:
-                    if self.compare_faces(embedding1, embedding2):
-                        logging.info(f"Face {face_idx1 + 1} in {os.path.basename(file1)} matches "
-                                     f"Face {face_idx2 + 1} in {os.path.basename(file2)}")

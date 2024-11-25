@@ -20,9 +20,6 @@ logging.basicConfig(
 )
 logging = logging.getLogger("clip_text_processor_service")
 
-MATCH_OUTPUT_FOLDER = "./matches"
-os.makedirs(MATCH_OUTPUT_FOLDER, exist_ok=True)
-
 class EnvVars:
     def __init__(self):
         self.nats_endpoint = os.getenv("NATS_ENDPOINT")

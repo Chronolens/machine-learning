@@ -95,7 +95,6 @@ def get_extension_from_content_type(content_type):
         'image/jpeg': '.jpg',
         'image/png': '.png',
 
-        # libheif and heic heif
         'image/heif': '.heif',
         'image/heic': '.heic'
     }
@@ -111,14 +110,11 @@ class ClipImageProcessor:
         logging.info(f"Using device: {self.device}")
         self.model_name = "ViT-B-16" 
         self.pretrained_dataset = "datacomp_l_s1b_b8k" 
-        self.embeddings_folder = "./embeddings" 
-        
+
         self.model, _, preprocess_val = open_clip.create_model_and_transforms(self.model_name, pretrained=self.pretrained_dataset)
         self.model.to(self.device)
         self.preprocess = preprocess_val
-        
-        if not os.path.exists(self.embeddings_folder):
-            os.makedirs(self.embeddings_folder)
+
 
     def generate_embedding(self, image_path):
         start_time = time.time()
