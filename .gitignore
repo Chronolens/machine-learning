@@ -1,7 +1,7 @@
 */test_downloaded_images/*
 
-face_recognition/src/__pycache__/*
-face_recognition/src/temp_downloaded_images/*
+src/__pycache__/*
+src/temp_downloaded_images/*
 
 identified_faces/*
 .env

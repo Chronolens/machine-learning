@@ -168,8 +168,8 @@ class ImageProcessor:
             
             self.clip_processor.generate_and_update_clip_embeddings(image_path, db_conn)
 
-        
-        self.insert_face_data_to_db(face_data, db_conn)
+            if len(face_data) > 0:
+                self.insert_face_data_to_db(face_data, db_conn)
 
 
     def insert_face_data_to_db(self, face_data, db_conn):
