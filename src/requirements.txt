@@ -8,7 +8,7 @@ opencv_python_headless==4.10.0.84
 pgvecto_rs==0.2.2
 Pillow==11.0.0
 pillow_heif==0.20.0
-psycopg-binary==3.2.3
+psycopg[binary]==3.2.3
 python-dotenv==1.0.1
 scikit_learn==1.5.2
 scipy==1.14.1
