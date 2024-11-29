@@ -3,8 +3,7 @@ botocore==1.35.44
 insightface==0.7.3
 nats_py==2.9.0
 numpy==2.1.3
-opencv_python==4.10.0.84
-opencv_python_headless==4.10.0.84
+opencv-python-headless==4.10.0.84
 pgvecto_rs==0.2.2
 Pillow==11.0.0
 pillow_heif==0.20.0
