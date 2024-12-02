@@ -198,6 +198,25 @@ class ImageProcessor:
 
 
 
+def check_for_face_data(db_conn, media_id):
+    query = """
+        SELECT COUNT(*)
+        FROM media_face
+        WHERE media_id = %s;
+    """
+    params = (media_id,)
+    
+    try:
+        with db_conn.cursor() as cursor:
+            cursor.execute(query, params)
+            count = cursor.fetchone()[0]
+            return count > 0
+    except Exception as e:
+        logger.error(f"Error checking face data for media_id {media_id}: {e}")
+        return False
+
+    
+
 def connect_to_database(envs: EnvVars):
     url = f"postgresql://{envs.database_user}:{envs.database_password}@" \
           f"{envs.database_host}:{envs.database_port}/{envs.database_name}"
@@ -238,10 +257,15 @@ async def message_handler(msg: Msg, image_processor: ImageProcessor, bucket, db_
     logging.info(f"Received message: {msg.data.decode()}")
     uuid = msg.data.decode()
 
+    if (check_for_face_data(db_conn, uuid)):
+        logging.info(f"Media {uuid} already has face data. Skipping processing.")
+        await msg.term()
+        return
+
     image_path = fetch_image_from_s3(uuid, bucket)
     if not image_path:
         logging.error(f"Image {uuid} could not be downloaded. Skipping processing.")
-        await msg.ack()
+        await msg.term()
         return
 
     try:
