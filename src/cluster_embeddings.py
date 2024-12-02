@@ -167,7 +167,7 @@ def main():
         logger.info("Database connection closed.")
         
         logger.info("Waiting for the next clustering cycle in 60 minutes.")
-        time.sleep(3600)
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
