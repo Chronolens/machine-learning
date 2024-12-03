@@ -134,7 +134,7 @@ def main():
         if not rows:
             logger.info("No embeddings found in the database. Waiting for the next cycle.")
             conn.close()
-            time.sleep(3600)
+            time.sleep(60)
             continue
 
         user_data = {}
